@@ -4,12 +4,18 @@ Real-time playable FM synthesizer with keyboard control.
 Reuses generate_fm() from fm_synth.py to synthesize a short waveform on each
 key-press and plays it immediately via sounddevice.
 
+Key layout (AZERTY keyboard):
+
+    Upper black:   é  "     (  '  è        (C#5 D#5  F#5 G#5 A#5)
+    Upper white:  A  Z  E  R  T  Y  U      (C5  D5  E5  F5  G5  A5  B5)
+    Lower black:   S  D     G  H  J        (C#4 D#4  F#4 G#4 A#4)
+    Lower white:  W  X  C  V  B  N  ,      (C4  D4  E4  F4  G4  A4  B4)
+
 Controls:
-    Z S X D C V G B H N J M  → MIDI notes (piano-like two-octave layout)
-    UP / DOWN arrows          → modulation index (+/- 0.5)
-    LEFT / RIGHT arrows       → modulation ratio (cycles through presets)
-    + / -                     → volume (+/- 10 %)
-    Esc                       → quit
+    UP / DOWN arrows   → modulation index (+/- 0.5)
+    LEFT / RIGHT arrows → modulation ratio (cycles through presets)
+    + / -              → volume (+/- 10 %)
+    Esc                → quit
 
 Usage:
     python synth/realtime_synth.py
@@ -45,48 +51,49 @@ MOD_INDEX_MAX  = 20.0         # upper cap for modulation index
 MOD_RATIO_PRESETS = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0]
 
 # ---------------------------------------------------------------------------
-# Key → MIDI note mapping
+# Key → MIDI note mapping  (AZERTY keyboard layout)
 # ---------------------------------------------------------------------------
 #
-#  Piano-like two-octave layout (bottom row = white keys, row above = black):
+#  Piano-like two-octave layout.  Physical key positions match AZERTY:
 #
-#  Black:  S  D     G  H  J        (C#4 D#4  F#4 G#4 A#4)
-#  White: Z  X  C  V  B  N  M      (C4  D4  E4  F4  G4  A4  B4)
-#
-#  The row continues with the upper octave (C5…):
-#  Black:       2  3     5  6  7
-#  White:      Q  W  E  R  T  Y  U  (C5 D5 E5 F5 G5 A5 B5)
+#  Upper black:   é  "     (  '  è        (C#5 D#5  F#5 G#5 A#5)
+#  Upper white:  A  Z  E  R  T  Y  U      (C5  D5  E5  F5  G5  A5  B5)
+#  Lower black:   S  D     G  H  J        (C#4 D#4  F#4 G#4 A#4)
+#  Lower white:  W  X  C  V  B  N  ,      (C4  D4  E4  F4  G4  A4  B4)
 #
 
 KEY_NOTE_MAP: dict[str, int] = {
-    # Lower octave – white keys
-    "z": 60,  # C4
+    # Lower octave – white keys (AZERTY bottom row: W X C V B N ,)
+    "w": 60,  # C4
     "x": 62,  # D4
     "c": 64,  # E4
     "v": 65,  # F4
     "b": 67,  # G4
     "n": 69,  # A4
-    "m": 71,  # B4
-    # Lower octave – black keys
+    ",": 71,  # B4
+    # Lower octave – black keys (AZERTY home row: S D G H J)
     "s": 61,  # C#4
     "d": 63,  # D#4
     "g": 66,  # F#4
     "h": 68,  # G#4
     "j": 70,  # A#4
-    # Upper octave – white keys
-    "q": 72,  # C5
-    "w": 74,  # D5
+    # Upper octave – white keys (AZERTY top row: A Z E R T Y U)
+    "a": 72,  # C5
+    "z": 74,  # D5
     "e": 76,  # E5
     "r": 77,  # F5
     "t": 79,  # G5
     "y": 81,  # A5
     "u": 83,  # B5
-    # Upper octave – black keys
-    "2": 73,  # C#5
-    "3": 75,  # D#5
-    "5": 78,  # F#5
-    "6": 80,  # G#5
-    "7": 82,  # A#5
+    # Upper octave – black keys (AZERTY number row: é " ( ' è)
+    # Physical key 6 on AZERTY produces '-', which is already used for volume
+    # decrease, so it cannot double as a note key.  Physical key 4 (apostrophe)
+    # is used for G#5 in its place.
+    "é": 73,  # C#5  (physical key 2)
+    '"': 75,  # D#5  (physical key 3)
+    "(": 78,  # F#5  (physical key 5)
+    "'": 80,  # G#5  (physical key 4 — key 6 reserved for volume)
+    "è": 82,  # A#5  (physical key 7)
 }
 
 # ---------------------------------------------------------------------------
@@ -207,11 +214,14 @@ def main() -> None:
             "Run: pip install pynput  (and ensure a display is available)"
         )
 
-    print("=== Real-time FM Synthesizer ===")
-    print("Notes : Z X C V B N M / S D G H J  (lower octave)")
-    print("        Q W E R T Y U / 2 3 5 6 7  (upper octave)")
-    print("Params: ↑↓ mod_index  |  ←→ mod_ratio  |  +/- volume")
-    print("Press Esc to quit.\n")
+    print("=== Real-time FM Synthesizer (AZERTY) ===")
+    print("  é  \"     (  '  è     ← upper black keys (C#5 D#5  F#5 G#5 A#5)")
+    print("A  Z  E  R  T  Y  U   ← upper white keys (C5  D5  E5  F5  G5  A5  B5)")
+    print("  S  D     G  H  J     ← lower black keys (C#4 D#4  F#4 G#4 A#4)")
+    print("W  X  C  V  B  N  ,   ← lower white keys (C4  D4  E4  F4  G4  A4  B4)")
+    print()
+    print("Params: ↑↓ mod_index  |  ←→ mod_ratio  |  +/- volume  |  Esc quit")
+    print()
     print(
         f"Initial params: mod_index={params['mod_index']:.2f}  "
         f"mod_ratio={params['mod_ratio']:.2f}  volume={_volume:.2f}"
