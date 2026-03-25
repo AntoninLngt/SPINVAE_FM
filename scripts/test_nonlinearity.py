@@ -3,8 +3,14 @@ Test the non-linearity of the FM synthesizer by interpolating between two preset
 
 This script:
   1. Loads two presets from the dataset (first/last or maximally different).
-  2. Linearly interpolates all numeric FM parameters between the two presets.
-  3. Synthesizes audio for every interpolated step via ``generate_fm``.
+  2. Linearly interpolates all numeric FM parameters between the two presets
+     using **T = 9 steps** (matching the SpinVAE paper convention)::
+
+         interpolated_param[t] = preset_a + (t-1)/(T-1) * (preset_b - preset_a)
+         for t in 1 … T
+
+  3. Synthesizes audio for every interpolated step via ``render_audio`` /
+     ``generate_fm``.
   4. Reports per-step parameter values and audio-difference metrics
      (RMS, log-spectral distance).
   5. Optionally saves each step's audio as a WAV file in a preview folder.
@@ -25,7 +31,7 @@ Usage::
     # Save audio and show plots
     python scripts/test_nonlinearity.py --save-audio --plot
 
-    # Control number of interpolation steps
+    # Control number of interpolation steps (default T = 9)
     python scripts/test_nonlinearity.py --n-steps 20
 
     # Play audio (requires sounddevice)
@@ -178,20 +184,25 @@ def _select_max_distance(
 # Interpolation
 # ---------------------------------------------------------------------------
 
-def interpolate_presets(preset_a: dict, preset_b: dict, n_steps: int) -> list[dict]:
-    """Return a list of *n_steps* interpolated parameter dicts.
+def interpolate_params(preset_a: dict, preset_b: dict, T: int) -> list[dict]:
+    """Return a list of *T* linearly interpolated parameter dicts.
 
-    ``alpha`` runs from 0 (= preset_a) to 1 (= preset_b).
+    Step index *t* runs from 1 to T (inclusive).  The interpolation factor
+    for step *t* is ``(t-1) / (T-1)``, so:
 
-    For the keys in ``_INTERPOLATE_KEYS`` a linear interpolation is applied::
+    - step 1  → preset_a  (factor = 0)
+    - step T  → preset_b  (factor = 1)
 
-        interpolated[key] = preset_a[key] + alpha * (preset_b[key] - preset_a[key])
+    Formally, for each interpolatable key::
 
-    All other keys are copied unchanged from preset_a.
+        interpolated[key][t] = preset_a[key] + (t-1)/(T-1) * (preset_b[key] - preset_a[key])
+
+    All other keys (``midi_note``, ``velocity``, …) are copied unchanged from
+    *preset_a*.
     """
-    alphas = np.linspace(0.0, 1.0, n_steps)
     result = []
-    for alpha in alphas:
+    for t in range(1, T + 1):
+        alpha = (t - 1) / (T - 1)  # 0.0 at t=1, 1.0 at t=T
         step_params = dict(preset_a)  # copy fixed keys (midi_note, velocity, …)
         for key in _INTERPOLATE_KEYS:
             step_params[key] = float(
@@ -199,6 +210,37 @@ def interpolate_presets(preset_a: dict, preset_b: dict, n_steps: int) -> list[di
             )
         result.append(step_params)
     return result
+
+
+# Keep the old name as an alias for backwards compatibility.
+interpolate_presets = interpolate_params
+
+
+# ---------------------------------------------------------------------------
+# Audio helpers
+# ---------------------------------------------------------------------------
+
+def render_audio(params: dict) -> np.ndarray:
+    """Synthesize a waveform from an FM parameter dictionary.
+
+    A thin wrapper around ``generate_fm`` that makes the pipeline explicit::
+
+        waveform[t] = render_audio(interpolated_param[t])
+    """
+    return generate_fm(params)
+
+
+def play_audio(waveform: np.ndarray, sample_rate: int) -> None:
+    """Play a waveform through the system's default audio output.
+
+    Requires the optional *sounddevice* library.  Prints a warning and returns
+    immediately when the library is not available.
+    """
+    if not _SOUNDDEVICE_AVAILABLE:
+        print("[play_audio] sounddevice not installed – skipping playback.")
+        return
+    sd.play(waveform, samplerate=sample_rate)
+    sd.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +403,9 @@ def run_test(
     # ------------------------------------------------------------------
     # 3. Linearly interpolate between the two presets
     # ------------------------------------------------------------------
-    print(f"\nInterpolating with {n_steps} steps …")
-    step_params = interpolate_presets(preset_a, preset_b, n_steps)
-    alphas = np.linspace(0.0, 1.0, n_steps)
+    print(f"\nInterpolating with {n_steps} steps (T = {n_steps}) …")
+    step_params = interpolate_params(preset_a, preset_b, n_steps)
+    alphas = np.array([(t - 1) / (n_steps - 1) for t in range(1, n_steps + 1)])
 
     # ------------------------------------------------------------------
     # 4. Synthesize audio for each step and collect metrics
@@ -379,7 +421,7 @@ def run_test(
     print("-" * len(header_line))
 
     for step_i, (alpha, params) in enumerate(zip(alphas, step_params)):
-        wave = generate_fm(params)
+        wave = render_audio(params)
         waveforms.append(wave)
 
         r = rms(wave)
@@ -433,22 +475,19 @@ def run_test(
     # 7. Play audio sequentially (optional)
     # ------------------------------------------------------------------
     if play:
-        if not _SOUNDDEVICE_AVAILABLE:
-            print("\n[play] sounddevice not installed – skipping playback.")
-        else:
-            sr = int(step_params[0].get("sample_rate", SAMPLE_RATE))
-            print(f"\nPlaying {n_steps} steps …  (press Ctrl-C to stop)")
-            try:
-                for step_i, wave in enumerate(waveforms):
-                    alpha = alphas[step_i]
-                    print(f"  Playing step {step_i + 1}/{n_steps}  α={alpha:.3f}", end="\r", flush=True)
-                    sd.play(wave, samplerate=sr)
-                    sd.wait()
-                    time.sleep(0.1)  # brief pause between steps
-                print()
-            except KeyboardInterrupt:
+        sr = int(step_params[0].get("sample_rate", SAMPLE_RATE))
+        print(f"\nPlaying {n_steps} steps …  (press Ctrl-C to stop)")
+        try:
+            for step_i, wave in enumerate(waveforms):
+                alpha = alphas[step_i]
+                print(f"  Playing step {step_i + 1}/{n_steps}  α={alpha:.3f}", end="\r", flush=True)
+                play_audio(wave, sr)
+                time.sleep(0.1)  # brief pause between steps
+            print()
+        except KeyboardInterrupt:
+            if _SOUNDDEVICE_AVAILABLE:
                 sd.stop()
-                print("\nPlayback interrupted.")
+            print("\nPlayback interrupted.")
 
     # ------------------------------------------------------------------
     # 8. Visualisation (optional)
@@ -501,8 +540,8 @@ def _parse_args() -> argparse.Namespace:
 
     # Interpolation
     parser.add_argument(
-        "--n-steps", type=int, default=10,
-        help="Number of interpolation steps (including endpoints).",
+        "--n-steps", type=int, default=9,
+        help="Number of interpolation steps T (including endpoints).  Default is 9 as per the SpinVAE paper.",
     )
 
     # Output
