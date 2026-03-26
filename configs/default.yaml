@@ -35,7 +35,7 @@ training:
   gamma:         0.1       # AR-loss weight
   ar_delta:      1.0       # tanh steepness in AR-loss
 
-  compute_audio_features: false   # set to true to enable AR-loss
+  compute_audio_features: true   # set to true to enable AR-loss
 
 # ---- Logging / checkpoints ------------------------------------------------
 output:
