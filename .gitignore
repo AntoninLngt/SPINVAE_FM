@@ -21,3 +21,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated analysis plots
+data/plots/
