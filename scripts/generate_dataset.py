@@ -73,8 +73,11 @@ VAL_RATIO   = 0.1
 # Core generation
 # ---------------------------------------------------------------------------
 
-def log_uniform(rng, low, high):
-    return np.exp(rng.uniform(np.log(low), np.log(high)))
+def mixed_log_uniform(rng, low, high, p_log=0.5):
+    if rng.random() < p_log:
+        return np.exp(rng.uniform(np.log(low), np.log(high)))
+    else:
+        return rng.uniform(low, high)
 
 def _sample_params(rng):
     return {
@@ -84,10 +87,10 @@ def _sample_params(rng):
         "mod_ratio": rng.uniform(0.5, 4.0),
         "mod_index": rng.uniform(0.0, 10.0),
 
-        "attack": log_uniform(rng, 0.01, 0.5),
-        "decay": log_uniform(rng, 0.05, 0.5),
+        "attack": mixed_log_uniform(rng, 0.01, 0.5),
+        "decay": mixed_log_uniform(rng, 0.05, 0.5),
         "sustain": rng.uniform(0.3, 1.0),
-        "release": log_uniform(rng, 0.05, 0.5),
+        "release": mixed_log_uniform(rng, 0.05, 0.5),
     }
 
 def _normalize(waveform: np.ndarray) -> np.ndarray:
