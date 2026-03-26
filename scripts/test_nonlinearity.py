@@ -72,6 +72,13 @@ try:
 except ImportError:
     _SOUNDDEVICE_AVAILABLE = False
 
+try:
+    import librosa  # type: ignore
+    import librosa.display  # type: ignore
+    _LIBROSA_AVAILABLE = True
+except ImportError:
+    _LIBROSA_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Numeric parameter keys that will be interpolated.
 # "midi_note" and "velocity" are fixed in the dataset and kept constant.
@@ -268,6 +275,155 @@ def log_spectral_distance(wave_a: np.ndarray, wave_b: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
+# STFT-based helpers (demo-notebook style)
+# ---------------------------------------------------------------------------
+
+_STFT_N_FFT = 2048
+_STFT_HOP = 512
+
+
+def compute_stft_db(waveform: np.ndarray, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Compute a log-magnitude (dB) STFT spectrogram.
+
+    Uses librosa when available; falls back to ``numpy.fft`` otherwise.
+
+    Returns a 2-D array of shape *(n_freqs, n_frames)* in dB.
+    """
+    wave = waveform.astype(np.float32)
+    if _LIBROSA_AVAILABLE:
+        stft = librosa.stft(wave, n_fft=_STFT_N_FFT, hop_length=_STFT_HOP)
+        return librosa.amplitude_to_db(np.abs(stft), ref=np.max)
+    # Fallback: use numpy with a simple frame loop.
+    n = len(wave)
+    n_fft = _STFT_N_FFT
+    hop = _STFT_HOP
+    frames = range(0, n - n_fft + 1, hop)
+    window = np.hanning(n_fft)
+    specs = []
+    for start in frames:
+        frame = wave[start: start + n_fft] * window
+        spec = np.abs(np.fft.rfft(frame))
+        specs.append(spec)
+    S = np.array(specs).T  # (n_freqs, n_frames)
+    eps = 1e-10
+    return 20.0 * np.log10(S + eps) - 20.0 * np.log10(np.max(S) + eps)
+
+
+def spectral_distance(wave_a: np.ndarray, wave_b: np.ndarray) -> float:
+    """STFT-based spectral distance between two waveforms.
+
+    Computes the RMS difference of the dB spectrograms, which is
+    consistent with the log-spectral distance used in the demo notebook.
+    """
+    db_a = compute_stft_db(wave_a)
+    db_b = compute_stft_db(wave_b)
+    # Match the shorter time axis.
+    n_frames = min(db_a.shape[1], db_b.shape[1])
+    diff = db_a[:, :n_frames] - db_b[:, :n_frames]
+    return float(np.sqrt(np.mean(diff ** 2)))
+
+
+# ---------------------------------------------------------------------------
+# Trajectory metrics (demo-notebook philosophy)
+# ---------------------------------------------------------------------------
+
+def compute_metrics(waveforms: list[np.ndarray]) -> dict:
+    """Compute trajectory metrics for a list of interpolated waveforms.
+
+    Returns a dictionary with:
+    - ``consecutive_distances``: spectral distance between each pair of
+      adjacent steps  (length T-1)
+    - ``distances_to_target``: spectral distance from each step to the
+      final waveform  (length T)
+    - ``cumulative_distances``: running sum of consecutive distances
+      (length T, starts at 0)
+    - ``straight_distance``: spectral distance from first to last step
+    - ``linearity``: straight_distance / cumulative_distance
+    - ``smoothness``: std of consecutive_distances (lower = smoother)
+    """
+    n = len(waveforms)
+    # (a) Distance between consecutive steps.
+    consec = [
+        spectral_distance(waveforms[i], waveforms[i + 1])
+        for i in range(n - 1)
+    ]
+    # (b) Distance from each step to target (last waveform).
+    to_target = [spectral_distance(w, waveforms[-1]) for w in waveforms]
+    # (c) Cumulative trajectory distance.
+    cumulative = [0.0]
+    for d in consec:
+        cumulative.append(cumulative[-1] + d)
+    # (d) Straight-line distance (first → last).
+    straight = spectral_distance(waveforms[0], waveforms[-1])
+    # (e) Linearity metric.
+    total_path = cumulative[-1]
+    linearity = straight / total_path if total_path > 0 else 1.0
+    # (f) Smoothness (lower std = more uniform spacing).
+    smoothness = float(np.std(consec)) if consec else 0.0
+
+    return {
+        "consecutive_distances": consec,
+        "distances_to_target": to_target,
+        "cumulative_distances": cumulative,
+        "straight_distance": straight,
+        "linearity": linearity,
+        "smoothness": smoothness,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Feature extraction (demo-notebook spirit)
+# ---------------------------------------------------------------------------
+
+def compute_features(waveforms: list[np.ndarray], sample_rate: int = SAMPLE_RATE) -> dict:
+    """Compute per-step audio descriptors.
+
+    Returns a dictionary with arrays of length T:
+    - ``spectral_centroid``: mean spectral centroid over time
+    - ``spectral_bandwidth``: mean spectral bandwidth over time
+    - ``mfcc_mean``: mean of MFCC coefficients (list of arrays, or None)
+    """
+    centroids: list[float] = []
+    bandwidths: list[float] = []
+    mfccs: list[np.ndarray | None] = []
+
+    for wave in waveforms:
+        w = wave.astype(np.float32)
+        if _LIBROSA_AVAILABLE:
+            sc = librosa.feature.spectral_centroid(y=w, sr=sample_rate)
+            centroids.append(float(np.mean(sc)))
+            sb = librosa.feature.spectral_bandwidth(y=w, sr=sample_rate)
+            bandwidths.append(float(np.mean(sb)))
+            mfcc = librosa.feature.mfcc(y=w, sr=sample_rate, n_mfcc=13)
+            mfccs.append(np.mean(mfcc, axis=1))
+        else:
+            # Numpy fallback: estimate centroid from mean power spectrum
+            # using the same windowed frames as compute_stft_db for consistency.
+            n = len(w)
+            n_fft = _STFT_N_FFT
+            hop = _STFT_HOP
+            window = np.hanning(n_fft)
+            frame_powers = []
+            for start in range(0, n - n_fft + 1, hop):
+                frame = w[start: start + n_fft] * window
+                frame_powers.append(np.abs(np.fft.rfft(frame)) ** 2)
+            power = np.mean(frame_powers, axis=0) if frame_powers else np.zeros(n_fft // 2 + 1)
+            freqs = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate)
+            total_power = power.sum() + 1e-10
+            sc = float(np.sum(freqs * power) / total_power)
+            variance = float(np.sum(((freqs - sc) ** 2) * power) / total_power)
+            centroids.append(sc)
+            bandwidths.append(float(np.sqrt(max(variance, 0.0))))
+            mfccs.append(None)
+
+    return {
+        "spectral_centroid": centroids,
+        "spectral_bandwidth": bandwidths,
+        "mfcc_mean": mfccs,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Visualisation
 # ---------------------------------------------------------------------------
 
@@ -277,12 +433,24 @@ def _plot_steps(
     sample_rate: int,
     title_prefix: str = "Interpolation",
 ) -> None:
-    """Plot waveform and spectrogram for every interpolation step."""
+    """Plot waveform and STFT spectrogram for every interpolation step.
+
+    Spectrograms use:
+    - log-magnitude (dB scale)
+    - log-frequency axis (when librosa is available)
+    - shared colour scale across all steps for visual comparability
+    """
     if not _MATPLOTLIB_AVAILABLE:
         print("[plot] matplotlib not installed – skipping plots.")
         return
 
     n_steps = len(waveforms)
+
+    # Pre-compute all dB spectrograms so we can determine a shared colour scale.
+    db_specs = [compute_stft_db(w, sample_rate) for w in waveforms]
+    global_vmin = min(s.min() for s in db_specs)
+    global_vmax = max(s.max() for s in db_specs)
+
     fig, axes = plt.subplots(
         n_steps, 2,
         figsize=(12, 2.5 * n_steps),
@@ -302,18 +470,37 @@ def _plot_steps(
         ax_wave.set_xlabel("Time (s)")
         ax_wave.set_title(f"Step {i + 1} waveform")
 
-        # --- Spectrogram ---
+        # --- STFT spectrogram ---
         ax_spec = axes[i][1]
-        ax_spec.specgram(
-            wave.astype(np.float64),
-            Fs=sample_rate,
-            NFFT=256,
-            noverlap=128,
-            cmap="inferno",
-        )
+        S_db = db_specs[i]
+        if _LIBROSA_AVAILABLE:
+            librosa.display.specshow(
+                S_db,
+                sr=sample_rate,
+                hop_length=_STFT_HOP,
+                x_axis="time",
+                y_axis="log",
+                ax=ax_spec,
+                vmin=global_vmin,
+                vmax=global_vmax,
+                cmap="inferno",
+            )
+        else:
+            # Fallback: plain imshow with linear frequency axis.
+            n_freqs, n_frames = S_db.shape
+            extent = [0, duration, 0, sample_rate / 2]
+            ax_spec.imshow(
+                S_db,
+                origin="lower",
+                aspect="auto",
+                extent=extent,
+                vmin=global_vmin,
+                vmax=global_vmax,
+                cmap="inferno",
+            )
+            ax_spec.set_ylabel("Frequency (Hz)")
         ax_spec.set_xlabel("Time (s)")
-        ax_spec.set_ylabel("Frequency (Hz)")
-        ax_spec.set_title(f"Step {i + 1} spectrogram")
+        ax_spec.set_title(f"Step {i + 1} spectrogram (dB)")
 
     plt.tight_layout()
     plt.show()
@@ -323,25 +510,98 @@ def _plot_metrics(
     alphas: np.ndarray,
     rms_values: list[float],
     lsd_values: list[float],
+    metrics: dict | None = None,
+    features: dict | None = None,
 ) -> None:
-    """Plot RMS energy and log-spectral distance across interpolation steps."""
+    """Multi-panel metrics plot matching the demo-notebook layout.
+
+    Layout (2 rows × 3 columns):
+    - [0,0] Distance between consecutive steps
+    - [0,1] Distance to target
+    - [0,2] Cumulative distance trajectory
+    - [1,0] Spectral centroid vs α
+    - [1,1] Spectral bandwidth vs α
+    - [1,2] RMS energy vs α
+    """
     if not _MATPLOTLIB_AVAILABLE:
         return
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-    fig.suptitle("Audio metrics across interpolation steps", fontsize=14)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle("Interpolation trajectory metrics", fontsize=14)
 
-    ax1.plot(alphas, rms_values, marker="o")
-    ax1.set_xlabel("α (interpolation factor)")
-    ax1.set_ylabel("RMS energy")
-    ax1.set_title("RMS energy per step")
-    ax1.grid(True)
+    # Convenience references.
+    # Note: when `metrics` is provided, consecutive distances use STFT-based
+    # spectral distance (dB RMS).  The `lsd_values` fallback uses the legacy
+    # log-spectral distance (different units); prefer passing metrics explicitly.
+    consec = metrics["consecutive_distances"] if metrics else lsd_values
+    to_target = metrics["distances_to_target"] if metrics else None
+    cumulative = metrics["cumulative_distances"] if metrics else None
+    centroids = features["spectral_centroid"] if features else None
+    bandwidths = features["spectral_bandwidth"] if features else None
 
-    ax2.plot(alphas[1:], lsd_values, marker="o", color="orange")
-    ax2.set_xlabel("α (interpolation factor)")
-    ax2.set_ylabel("Log-spectral distance (LSD)")
-    ax2.set_title("LSD between consecutive steps")
-    ax2.grid(True)
+    # --- [0,0] Distance between consecutive steps ---
+    ax = axes[0][0]
+    ax.plot(alphas[1:], consec, marker="o", color="orange")
+    ax.set_xlabel("α (interpolation factor)")
+    ax.set_ylabel("Spectral distance (dB RMS)")
+    ax.set_title("Distance between consecutive steps")
+    ax.grid(True)
+
+    # --- [0,1] Distance to target ---
+    ax = axes[0][1]
+    if to_target is not None:
+        ax.plot(alphas, to_target, marker="o", color="steelblue")
+        ax.set_xlabel("α (interpolation factor)")
+        ax.set_ylabel("Spectral distance to target (dB RMS)")
+        ax.set_title("Distance to target (last step)")
+        ax.grid(True)
+    else:
+        ax.set_visible(False)
+
+    # --- [0,2] Cumulative distance trajectory ---
+    ax = axes[0][2]
+    if cumulative is not None:
+        ax.plot(alphas, cumulative, marker="o", color="green")
+        if metrics is not None:
+            straight = metrics["straight_distance"]
+            ax.axhline(straight, linestyle="--", color="red", label=f"Straight-line ({straight:.2f})")
+            ax.legend(fontsize=8)
+        ax.set_xlabel("α (interpolation factor)")
+        ax.set_ylabel("Cumulative spectral distance")
+        ax.set_title("Cumulative trajectory distance")
+        ax.grid(True)
+    else:
+        ax.set_visible(False)
+
+    # --- [1,0] Spectral centroid ---
+    ax = axes[1][0]
+    if centroids is not None:
+        ax.plot(alphas, centroids, marker="o", color="purple")
+        ax.set_xlabel("α (interpolation factor)")
+        ax.set_ylabel("Spectral centroid (Hz)")
+        ax.set_title("Spectral centroid vs α")
+        ax.grid(True)
+    else:
+        ax.set_visible(False)
+
+    # --- [1,1] Spectral bandwidth ---
+    ax = axes[1][1]
+    if bandwidths is not None:
+        ax.plot(alphas, bandwidths, marker="o", color="brown")
+        ax.set_xlabel("α (interpolation factor)")
+        ax.set_ylabel("Spectral bandwidth (Hz)")
+        ax.set_title("Spectral bandwidth vs α")
+        ax.grid(True)
+    else:
+        ax.set_visible(False)
+
+    # --- [1,2] RMS energy ---
+    ax = axes[1][2]
+    ax.plot(alphas, rms_values, marker="o")
+    ax.set_xlabel("α (interpolation factor)")
+    ax.set_ylabel("RMS energy")
+    ax.set_title("RMS energy per step")
+    ax.grid(True)
 
     plt.tight_layout()
     plt.show()
@@ -460,6 +720,20 @@ def run_test(
             print("   The interpolation appears smooth across these steps.")
 
     # ------------------------------------------------------------------
+    # 5b. Trajectory metrics & features (demo-notebook style)
+    # ------------------------------------------------------------------
+    print("\nComputing trajectory metrics …")
+    metrics = compute_metrics(waveforms)
+    features = compute_features(waveforms, int(step_params[0].get("sample_rate", SAMPLE_RATE)))
+
+    print("\n--- Interpolation trajectory summary ---")
+    print(f"    Total path distance  : {metrics['cumulative_distances'][-1]:.4f} dB RMS")
+    print(f"    Straight-line dist.  : {metrics['straight_distance']:.4f} dB RMS")
+    print(f"    Linearity score      : {metrics['linearity']:.4f}  (1.0 = perfectly straight)")
+    print(f"    Smoothness (std)     : {metrics['smoothness']:.4f}  (0.0 = perfectly uniform)")
+    print("----------------------------------------")
+
+    # ------------------------------------------------------------------
     # 6. Save audio files (optional)
     # ------------------------------------------------------------------
     if save_audio:
@@ -494,7 +768,7 @@ def run_test(
     # ------------------------------------------------------------------
     if plot:
         _plot_steps(waveforms, alphas, int(step_params[0].get("sample_rate", SAMPLE_RATE)))
-        _plot_metrics(alphas, rms_values, lsd_values)
+        _plot_metrics(alphas, rms_values, lsd_values, metrics=metrics, features=features)
 
     print("\nDone.")
 
