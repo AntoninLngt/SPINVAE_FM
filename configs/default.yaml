@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# Default configuration for the SpinVAE-style FM Preset VAE
+# ---------------------------------------------------------------------------
+
+# ---- Paths ----------------------------------------------------------------
+data:
+  metadata_csv: "data/metadata.csv"
+  splits_dir:   "data/splits"
+  audio_dir:    "data/audio"      # used only when compute_audio_features: true
+
+# ---- Architecture ---------------------------------------------------------
+model:
+  input_dim:  6     # number of continuous FM preset parameters
+  hidden_dim: 32    # width of encoder / decoder hidden layer
+  latent_dim: 16    # dimensionality of the latent space z
+
+# ---- Training schedule ----------------------------------------------------
+# SpinVAE uses a 3-phase schedule:
+#   Phase 1 – pre-train audio proxy CNN  (not implemented here)
+#   Phase 2 – train VAE (L_preset + β·L_DKL)
+#   Phase 3 – fine-tune with timbre regularisation (+ γ·L_timbre)
+training:
+  seed:        42
+  batch_size:  256
+  num_workers: 4
+
+  # Phase 2 – VAE training
+  phase2_epochs: 100
+  phase2_lr:     1.0e-3
+  beta:          1.0       # KL weight
+
+  # Phase 3 – timbre regularisation fine-tuning
+  phase3_epochs: 50
+  phase3_lr:     1.0e-4
+  gamma:         0.1       # AR-loss weight
+  ar_delta:      1.0       # tanh steepness in AR-loss
+
+  compute_audio_features: false   # set to true to enable AR-loss
+
+# ---- Logging / checkpoints ------------------------------------------------
+output:
+  checkpoint_dir: "checkpoints"
+  log_interval:   10       # log every N batches
