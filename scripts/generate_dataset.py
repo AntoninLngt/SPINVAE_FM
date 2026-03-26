@@ -73,13 +73,22 @@ VAL_RATIO   = 0.1
 # Core generation
 # ---------------------------------------------------------------------------
 
-def _sample_params(rng: np.random.Generator) -> dict:
-    """Sample random FM params and override note/velocity with fixed values."""
-    params = sample_random_params(rng)
-    params["midi_note"] = FIXED_MIDI_NOTE
-    params["velocity"]  = FIXED_VELOCITY
-    return params
+def log_uniform(rng, low, high):
+    return np.exp(rng.uniform(np.log(low), np.log(high)))
 
+def _sample_params(rng):
+    return {
+        "midi_note": FIXED_MIDI_NOTE,
+        "velocity": FIXED_VELOCITY,
+
+        "mod_ratio": rng.uniform(0.5, 4.0),
+        "mod_index": rng.uniform(0.0, 10.0),
+
+        "attack": log_uniform(rng, 0.01, 0.5),
+        "decay": log_uniform(rng, 0.05, 0.5),
+        "sustain": rng.uniform(0.3, 1.0),
+        "release": log_uniform(rng, 0.05, 0.5),
+    }
 
 def _normalize(waveform: np.ndarray) -> np.ndarray:
     """Normalize a waveform to the range [-1, 1].
