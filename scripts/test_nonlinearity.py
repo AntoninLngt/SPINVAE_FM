@@ -427,83 +427,145 @@ def compute_features(waveforms: list[np.ndarray], sample_rate: int = SAMPLE_RATE
 # Visualisation
 # ---------------------------------------------------------------------------
 
-def _plot_steps(
+# Shared mel-spectrogram parameters used by plot_spectrograms.
+_MEL_N_FFT = 2048
+_MEL_HOP = 512
+_MEL_N_MELS = 128
+
+# Waveform amplitude limits for plot_waveforms.
+_WAVEFORM_YLIM_MIN = -1
+_WAVEFORM_YLIM_MAX = 1
+
+
+def plot_waveforms(
     waveforms: list[np.ndarray],
     alphas: np.ndarray,
     sample_rate: int,
-    title_prefix: str = "Interpolation",
 ) -> None:
-    """Plot waveform and STFT spectrogram for every interpolation step.
+    """Plot one waveform per interpolation step in a single figure.
 
-    Spectrograms use:
-    - log-magnitude (dB scale)
-    - log-frequency axis (when librosa is available)
-    - shared colour scale across all steps for visual comparability
+    Layout: 1 row × N columns.
+
+    Parameters
+    ----------
+    waveforms   : List of mono waveforms (one per step).
+    alphas      : Interpolation factors corresponding to each step.
+    sample_rate : Sample rate in Hz.
     """
     if not _MATPLOTLIB_AVAILABLE:
-        print("[plot] matplotlib not installed – skipping plots.")
+        print("[plot] matplotlib not installed – skipping waveform plot.")
         return
 
     n_steps = len(waveforms)
-
-    # Pre-compute all dB spectrograms so we can determine a shared colour scale.
-    db_specs = [compute_stft_db(w, sample_rate) for w in waveforms]
-    global_vmin = min(s.min() for s in db_specs)
-    global_vmax = max(s.max() for s in db_specs)
-
     fig, axes = plt.subplots(
-        n_steps, 2,
-        figsize=(12, 2.5 * n_steps),
+        1, n_steps,
+        figsize=(3 * n_steps, 3),
         squeeze=False,
     )
-    fig.suptitle(f"{title_prefix}: waveforms and spectrograms", fontsize=14)
+    fig.suptitle("Interpolation: waveforms", fontsize=14)
 
     for i, (wave, alpha) in enumerate(zip(waveforms, alphas)):
         duration = len(wave) / sample_rate
         t = np.linspace(0.0, duration, len(wave), endpoint=False)
-
-        # --- Waveform ---
-        ax_wave = axes[i][0]
-        ax_wave.plot(t, wave, linewidth=0.5)
-        ax_wave.set_ylim(-1.1, 1.1)
-        ax_wave.set_ylabel(f"α={alpha:.2f}")
-        ax_wave.set_xlabel("Time (s)")
-        ax_wave.set_title(f"Step {i + 1} waveform")
-
-        # --- STFT spectrogram ---
-        ax_spec = axes[i][1]
-        S_db = db_specs[i]
-        if _LIBROSA_AVAILABLE:
-            librosa.display.specshow(
-                S_db,
-                sr=sample_rate,
-                hop_length=_STFT_HOP,
-                x_axis="time",
-                y_axis="log",
-                ax=ax_spec,
-                vmin=global_vmin,
-                vmax=global_vmax,
-                cmap="inferno",
-            )
-        else:
-            # Fallback: plain imshow with linear frequency axis.
-            n_freqs, n_frames = S_db.shape
-            extent = [0, duration, 0, sample_rate / 2]
-            ax_spec.imshow(
-                S_db,
-                origin="lower",
-                aspect="auto",
-                extent=extent,
-                vmin=global_vmin,
-                vmax=global_vmax,
-                cmap="inferno",
-            )
-            ax_spec.set_ylabel("Frequency (Hz)")
-        ax_spec.set_xlabel("Time (s)")
-        ax_spec.set_title(f"Step {i + 1} spectrogram (dB)")
+        ax = axes[0][i]
+        ax.plot(t, wave, linewidth=0.5)
+        ax.set_ylim(_WAVEFORM_YLIM_MIN, _WAVEFORM_YLIM_MAX)
+        ax.set_xlabel("Time (s)")
+        ax.set_title(f"Step {i + 1}\nα={alpha:.2f}")
+        if i == 0:
+            ax.set_ylabel("Amplitude")
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_spectrograms(
+    waveforms: list[np.ndarray],
+    sample_rate: int,
+    alphas: np.ndarray | None = None,
+) -> None:
+    """Plot one mel spectrogram per interpolation step in a single figure.
+
+    Uses ``librosa.feature.melspectrogram`` + ``librosa.power_to_db`` +
+    ``librosa.display.specshow`` with a shared colour scale across all steps.
+
+    Layout: 1 row × N columns.
+
+    Parameters
+    ----------
+    waveforms   : List of waveforms (mono or multi-channel; converted to mono
+                  internally).
+    sample_rate : Sample rate in Hz.
+    alphas      : Optional interpolation factors used for subplot titles.
+    """
+    if not _MATPLOTLIB_AVAILABLE:
+        print("[plot] matplotlib not installed – skipping spectrogram plot.")
+        return
+    if not _LIBROSA_AVAILABLE:
+        print("[plot] librosa not installed – skipping spectrogram plot.")
+        return
+
+    n_steps = len(waveforms)
+
+    # Pre-compute all mel spectrograms (dB) with consistent parameters.
+    db_specs = []
+    for wave in waveforms:
+        wave_sq = wave.squeeze()
+        mono = librosa.to_mono(wave_sq.T) if wave_sq.ndim > 1 else wave_sq.astype(np.float32)
+        S = librosa.feature.melspectrogram(
+            y=mono,
+            sr=sample_rate,
+            n_fft=_MEL_N_FFT,
+            hop_length=_MEL_HOP,
+            n_mels=_MEL_N_MELS,
+        )
+        db_specs.append(librosa.power_to_db(S, ref=np.max))
+
+    # Shared colour scale for visual consistency across steps.
+    global_vmin = min(s.min() for s in db_specs)
+    global_vmax = max(s.max() for s in db_specs)
+
+    fig, axes = plt.subplots(
+        1, n_steps,
+        figsize=(3 * n_steps, 3),
+        squeeze=False,
+    )
+    fig.suptitle("Interpolation: mel spectrograms", fontsize=14)
+
+    for i, S_db in enumerate(db_specs):
+        ax = axes[0][i]
+        librosa.display.specshow(
+            S_db,
+            sr=sample_rate,
+            hop_length=_MEL_HOP,
+            x_axis="time",
+            y_axis="mel",
+            ax=ax,
+            vmin=global_vmin,
+            vmax=global_vmax,
+            cmap="viridis",
+        )
+        if alphas is not None:
+            ax.set_title(f"Step {i + 1}\nα={alphas[i]:.2f}")
+        else:
+            ax.set_title(f"Step {i + 1}")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def _plot_steps(
+    waveforms: list[np.ndarray],
+    alphas: np.ndarray,
+    sample_rate: int,
+) -> None:
+    """Plot waveforms and mel spectrograms for every interpolation step.
+
+    Delegates to :func:`plot_waveforms` and :func:`plot_spectrograms`, which
+    each produce their own figure so the two views remain independent.
+    """
+    plot_waveforms(waveforms, alphas, sample_rate)
+    plot_spectrograms(waveforms, sample_rate, alphas=alphas)
 
 
 def _plot_metrics(
